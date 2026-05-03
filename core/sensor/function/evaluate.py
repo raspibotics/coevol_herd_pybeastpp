@@ -5,6 +5,46 @@ from core.sensor.beam_sensor import BeamSensor
 from core.world.world_object import WorldObject
 from core.utils import Vec2, get_vector_angle, WORLD_DISPLAY_PARAMETERS
 
+def _wrapped_distance_squared(a: Vec2, b: Vec2, world = None) -> float:
+    delta = np.abs(a - b)
+    if world is not None:
+        params = world._display_params
+        delta[0] = min(delta[0], params.width - delta[0])
+        delta[1] = min(delta[1], params.height - delta[1])
+    return float(np.dot(delta, delta))
+
+def connected_component_size(
+    seed: WorldObject,
+    candidates: list[WorldObject],
+    cluster_radius: float,
+    world = None
+) -> int:
+    if seed is None:
+        return 0
+
+    members = [
+        candidate for candidate in candidates
+        if candidate is not None and not getattr(candidate, "dead", False)
+    ]
+    if seed not in members and not getattr(seed, "dead", False):
+        members.append(seed)
+
+    radius_squared = cluster_radius * cluster_radius
+    connected = {seed}
+    frontier = [seed]
+    remaining = set(members)
+    remaining.discard(seed)
+
+    while frontier:
+        current = frontier.pop()
+        for candidate in list(remaining):
+            if _wrapped_distance_squared(current.location, candidate.location, world) <= radius_squared:
+                remaining.remove(candidate)
+                connected.add(candidate)
+                frontier.append(candidate)
+
+    return len(connected)
+
 class EvaluateNearest(EvaluateFunction):
     def __init__(
         self,
@@ -152,6 +192,27 @@ class EvaluateCount(EvaluateFunction):
     
     def evaluate(self) -> float:
         return float(self.count + self.start)
+
+class EvaluateClusterSize(EvaluateFunction):
+    def __init__(
+        self,
+        owner: WorldObject,
+        cluster_radius: float
+    ):
+        self.owner = owner
+        self.cluster_radius = cluster_radius
+        self.candidates: list[WorldObject] = []
+
+    def reset(self) -> None:
+        self.candidates.clear()
+
+    def __call__(self, obj: WorldObject, loc: Vec2):
+        self.candidates.append(obj)
+
+    def evaluate(self) -> float:
+        seed = getattr(self.owner, "owner", self.owner)
+        world = getattr(seed, "world", None)
+        return float(connected_component_size(seed, self.candidates, self.cluster_radius, world))
 
 class EvaluateProximity(EvaluateFunction):
     def __init__(

@@ -73,6 +73,17 @@ def density_sensor(
     )
     return s
 
+def cluster_sensor(
+    typing: type[WorldObject],
+    cluster_radius: float,
+    minimum_cluster_size: int
+) -> Sensor:
+    s = Sensor()
+    s.match_function = MatchKind(typing)
+    s.evaluate_function = EvaluateClusterSize(s, cluster_radius)
+    s.scale_function = ScaleThreshold(float(minimum_cluster_size))
+    return s
+
 def collision_sensor(typing: type[WorldObject], threshold: float = 1.0) -> Sensor:
     s = TouchSensor()
     s.match_function = MatchKind(typing)

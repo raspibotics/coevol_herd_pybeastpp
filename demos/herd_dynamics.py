@@ -4,7 +4,8 @@ from core.world.world_object import WorldObject
 from core.agent.ffn_agent import EvolvableFFNAgent
 from core.utils import ColourPalette, ColourType as CT
 from core.evolve.evolver import Evolver
-from core.sensor.implementation import proximity_sensor, nearest_angle_sensor, state_sensor, density_sensor
+from core.sensor.implementation import cluster_sensor, proximity_sensor, nearest_angle_sensor, state_sensor
+from core.sensor.function.evaluate import connected_component_size
 from core.simulation import Simulation
 from core.evolve.genetic_algorithm import GeneticAlgorithm
 from core.utils import GA_SELECTION_TYPE
@@ -14,6 +15,18 @@ from core.evolve.base import Group
 IS_DEMO = True
 DEMO_NAME = "Herd"
 CLASS_NAME = "HerdSimulation"
+
+SHEEP_CLUSTER_RADIUS = 65.0
+MIN_SHEEP_CLUSTER_SIZE = 3
+SHEEP_FITNESS_FLOOR = 0.001
+SHEEP_GRASS_REWARD = 8.0
+SHEEP_QUICK_GRASS_REWARD = 6.0
+SHEEP_CLUSTER_REWARD = 0.03
+SHEEP_SURVIVAL_REWARD = 10.0
+SHEEP_DEATH_MULTIPLIER = 0.2
+SHEEP_RECENCY_TIMESTEPS = 60.0
+WOLF_KILL_REWARD = 8.0
+WOLF_VISION_REWARD = 0.04
 
 class Grass(WorldObject):
     def __init__(self):
@@ -33,10 +46,11 @@ class Sheep(EvolvableFFNAgent, Evolver):
         self.timer = 0
         self.weighted_grass = 0
         self.times_eaten = 0
+        self.clustered_steps = 0
+        self.age = 0
 
         grass_range = 300
-        vision_range = 100
-        awareness_range = 50
+        vision_range = 140
 
         self.add_sensor("grass_angle", nearest_angle_sensor(Grass, grass_range))
         self.add_sensor("grass_left", proximity_sensor(Grass, (0.805*np.pi), vision_range, (0.2916*np.pi), True))
@@ -44,6 +58,7 @@ class Sheep(EvolvableFFNAgent, Evolver):
         self.add_sensor("sheep_angle", nearest_angle_sensor(Sheep, grass_range))
         #self.add_sensor("sheep_nearby", proximity_sensor(Sheep, (np.pi * 2), awareness_range, 0, True))
         #self.add_sensor("sheep_nearby", density_sensor(Sheep,(np.pi * 2), awareness_range, 0))
+        self.add_sensor("sheep_cluster", cluster_sensor(Sheep, SHEEP_CLUSTER_RADIUS, MIN_SHEEP_CLUSTER_SIZE))
         self.add_sensor("sheep_left", proximity_sensor(Sheep, (0.805*np.pi), vision_range, (0.2916*np.pi), True))
         self.add_sensor("sheep_right", proximity_sensor(Sheep, (0.805*np.pi), vision_range, -(0.2916*np.pi), True))
         self.add_sensor("left_wolf", proximity_sensor(Wolf, (0.805*np.pi), vision_range, (0.2916*np.pi), True))
@@ -55,7 +70,7 @@ class Sheep(EvolvableFFNAgent, Evolver):
 
         self.solid = True
         self._min_speed = 10.0
-        self._max_speed = 100.0
+        self._max_speed = 80.0
         self.radius = 10.0
         self.colour = ColourPalette[CT.BLUE]
     
@@ -71,17 +86,28 @@ class Sheep(EvolvableFFNAgent, Evolver):
         super().control()
         self.toggleAfraid()
         self.timer += 1
+        self.age += 1
+        if self.protected_by_cluster():
+            self.clustered_steps += 1
         for k in self.controls.keys():
             self.controls[k] = self.controls[k] + 0.5
 
-    # how to implement immunity to being eaten when nearby?
-    # even if we have sensor to track count of nearby sheep, how do we handle the eating logic if
-    # wolf is what triggers the eaten and wolf wont be able to see out "security?"
-    #Leave as is? could be interesting if wolves "push out" sheep till they can be eaten
+    def cluster_size(self) -> int:
+        if self.world is None:
+            return 1
+        sheep = [
+            agent for agent in self.world._agents
+            if isinstance(agent, Sheep) and not getattr(agent, "dead", False)
+        ]
+        return connected_component_size(self, sheep, SHEEP_CLUSTER_RADIUS, self.world)
+
+    def protected_by_cluster(self) -> bool:
+        return self.cluster_size() >= MIN_SHEEP_CLUSTER_SIZE
+
     def on_collision(self, obj):
         if isinstance(obj, Grass):
             self.grass_found += 1
-            self.weighted_grass += 500/(self.timer+1)
+            self.weighted_grass += 1.0 / (1.0 + self.timer / SHEEP_RECENCY_TIMESTEPS)
             self.timer = 0
             obj.eaten()
     
@@ -90,18 +116,28 @@ class Sheep(EvolvableFFNAgent, Evolver):
         # From Agent, allows it to no longer appear
         self.dead = True
     
-    # TODO: find more sophisticated fitness if not eaten (try time based solution to encourage active foraging?)
     def get_fitness(self):
-        if self.times_eaten > 0:
-            return 0
-        else: 
-            return self.weighted_grass / (self.grass_found + 1)
+        if self.grass_found == 0:
+            return SHEEP_FITNESS_FLOOR
+
+        forage_reward = SHEEP_GRASS_REWARD * self.grass_found
+        speed_reward = SHEEP_QUICK_GRASS_REWARD * self.weighted_grass
+        cluster_reward = SHEEP_CLUSTER_REWARD * self.clustered_steps
+        recency_multiplier = 1.0 / (1.0 + (self.timer / SHEEP_RECENCY_TIMESTEPS) ** 2)
+        survival_reward = 0.0 if self.times_eaten > 0 else SHEEP_SURVIVAL_REWARD
+        death_multiplier = SHEEP_DEATH_MULTIPLIER if self.times_eaten > 0 else 1.0
+        return max(
+            SHEEP_FITNESS_FLOOR,
+            ((forage_reward + speed_reward) * recency_multiplier + cluster_reward + survival_reward) * death_multiplier
+        )
     
     def reset(self):
         self.grass_found= 0
         self.times_eaten = 0
         self.weighted_grass = 0
+        self.clustered_steps = 0
         self.timer = 0
+        self.age = 0
 
 
 # Just copy pase of predator from chase
@@ -110,13 +146,16 @@ class Wolf(EvolvableFFNAgent, Evolver):
         EvolvableFFNAgent.__init__(self)
         Evolver.__init__(self)
         self.prey_eaten = 0
+        self.visual_tracking_score = 0.0
+        self.age = 0
         range = 300.0
         
+        self.add_sensor("angle", nearest_angle_sensor(Sheep, range))
         self.add_sensor("left", proximity_sensor(Sheep, np.pi/4, range, np.pi/8, True))
         self.add_sensor("right", proximity_sensor(Sheep, np.pi/4, range, -np.pi/8, True))
         self._interaction_range = range
         
-        self.add_brain(4)
+        self.add_brain(6)
         self.solid = True
         self.colour = ColourPalette[CT.RED]
         self._min_speed = 10.0
@@ -125,17 +164,31 @@ class Wolf(EvolvableFFNAgent, Evolver):
         
     def control(self):
         super().control()
+        left = self.sensors["left"].output()
+        right = self.sensors["right"].output()
+        self.visual_tracking_score += max(left, right)
+        self.age += 1
         for k in self.controls.keys():
             self.controls[k] = 0.5 * (self.controls[k] + 1.0)
     
     def on_collision(self, other):
         if isinstance(other, Sheep):
-            self.prey_eaten += 1
-            other.eaten()
+            if not other.dead and not other.protected_by_cluster():
+                self.prey_eaten += 1
+                other.eaten()
         super().on_collision(other)
     
     def get_fitness(self):
-        return self.prey_eaten + 0.01
+        return (
+            WOLF_KILL_REWARD * self.prey_eaten
+            + WOLF_VISION_REWARD * self.visual_tracking_score
+            + 0.01
+        )
+
+    def reset(self):
+        self.prey_eaten = 0
+        self.visual_tracking_score = 0.0
+        self.age = 0
         
 
 class HerdSimulation(Simulation):
@@ -146,7 +199,7 @@ class HerdSimulation(Simulation):
         self.assessments = 1
         self.timesteps = 500
         
-        population_sheep, population_wolf, population_grass = 10, 2, 40
+        population_sheep, population_wolf, population_grass = 24, 4, 130
         ga_sheep = GeneticAlgorithm(0.25, 0.1, selection=GA_SELECTION_TYPE.ROULETTE)
         ga_wolf = GeneticAlgorithm(0.25, 0.1, selection=GA_SELECTION_TYPE.ROULETTE)
 

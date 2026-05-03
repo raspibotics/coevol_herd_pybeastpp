@@ -3,6 +3,7 @@ import numpy as np
 from core.sensor.base import Sensor
 from core.sensor.beam_sensor import BeamSensor
 from core.sensor.touch_sensor import TouchSensor
+from core.sensor.state_sensor import StateSensor
 
 from core.sensor.function.evaluate import *
 from core.sensor.function.match import *
@@ -76,5 +77,12 @@ def collision_sensor(typing: type[WorldObject], threshold: float = 1.0) -> Senso
     s = TouchSensor()
     s.match_function = MatchKind(typing)
     s.evaluate_function = EvaluateCount()
+    s.scale_function = ScaleThreshold(1.0)
+    return s
+
+def state_sensor(typing: type[WorldObject], threshold: float = 1.0) -> Sensor:
+    s = StateSensor()
+    s.match_function = MatchKind(typing)
+    s.evaluate_function = EvaluateCount(0.0)
     s.scale_function = ScaleThreshold(1.0)
     return s

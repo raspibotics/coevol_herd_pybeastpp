@@ -79,6 +79,10 @@ class Sheep(EvolvableFFNAgent, Evolver):
             self.sensors["is_afraid"].updateState(1.0) 
         else:
             self.sensors["is_afraid"].updateState(0.0) 
+        if (self.protected_by_cluster()):
+            self.sensors["is_afraid"].updateState(0.0)
+        else: 
+            self.sensors["is_afraid"].updateState(1.0)
         
 
     def control(self):
@@ -121,13 +125,13 @@ class Sheep(EvolvableFFNAgent, Evolver):
 
         forage_reward = self.sheep_grass_reward * self.grass_found
         speed_reward = self.sheep_quick_grass_reward * self.weighted_grass
-        cluster_reward = self.sheep_cluster_reward * self.clustered_steps
-        recency_multiplier = 1.0 / (1.0 + (self.timer / self.sheep_recency_timesteps) ** 2)
-        survival_reward = 0.0 if self.times_eaten > 0 else self.sheep_survival_reward
+        #cluster_reward = self.sheep_cluster_reward * self.clustered_steps
+        #recency_multiplier = 1.0 / (1.0 + (self.timer / self.sheep_recency_timesteps) ** 2)
+        #survival_reward = 0.0 if self.times_eaten > 0 else self.sheep_survival_reward
         death_multiplier = self.sheep_death_multiplier if self.times_eaten > 0 else 1.0
         return max(
             self.sheep_fitness_floor,
-            ((forage_reward + speed_reward) * recency_multiplier + cluster_reward + survival_reward) * death_multiplier
+            ((forage_reward + speed_reward) ) * death_multiplier
         )
     
     def reset(self):
@@ -160,9 +164,6 @@ class Wolf(EvolvableFFNAgent, Evolver):
         self._min_speed = 10.0
         self._max_speed = 110.0
         self.radius = 15.0
-
-        self.wolf_kill_reward = 8.0
-        self.wolf_vision_reward = 0.04
         
     def control(self):
         super().control()
@@ -182,9 +183,7 @@ class Wolf(EvolvableFFNAgent, Evolver):
     
     def get_fitness(self):
         return (
-            self.wolf_kill_reward * self.prey_eaten
-            + self.wolf_vision_reward * self.visual_tracking_score
-            + 0.01
+            self.wolf_kill_reward * self.prey_eaten + 0.01
         )
 
     def reset(self):
@@ -197,7 +196,7 @@ class HerdSimulation(Simulation):
     def __init__(self):
         super().__init__("Herd")
         
-        self.generations = 200
+        self.generations = 100
         self.assessments = 1
         self.timesteps = 500
         

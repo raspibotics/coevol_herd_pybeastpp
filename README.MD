@@ -52,6 +52,8 @@ Within Pybeast directory
 
 3\. Once your environment is created, on following uses, only run activate and main.
 
+By default simulations use a fixed random seed (`12345`) so repeated runs are comparable. To change or disable this, pass `random_seed=<int>` or `random_seed=None` when calling `Simulation.__init__` in a simulation class.
+
 
 
 **Option 2**

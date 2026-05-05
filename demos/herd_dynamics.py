@@ -152,6 +152,8 @@ class Wolf(EvolvableFFNAgent, Evolver):
         self.visual_tracking_score = 0.0
         self.age = 0
         range = 300.0
+
+        self.wolf_kill_reward = 50.0
         
         self.add_sensor("angle", nearest_angle_sensor(Sheep, range))
         self.add_sensor("left", proximity_sensor(Sheep, (0.875*np.pi), range, (0.3403*np.pi), True))

@@ -1,14 +1,21 @@
 import logging
+import random
 import sys
 import time
 
 from abc import ABC
+import numpy as np
 from OpenGL.GL import glFinish
 from core.world.world import World
 from core.evolve.base import SimulationObject
 
+DEFAULT_RANDOM_SEED = 12345
+
 class Simulation(ABC):
-    def __init__(self, name):
+    def __init__(self, name, random_seed: int | None = DEFAULT_RANDOM_SEED):
+        self.random_seed = random_seed
+        self.seed_random_generators()
+
         self.world: World = World(self)
         self.contents: dict[str, SimulationObject] = {}
         self.runs: int = 1
@@ -28,6 +35,12 @@ class Simulation(ABC):
         self._initialise_logger()
         
         self.loaded = False
+
+    def seed_random_generators(self) -> None:
+        if self.random_seed is None:
+            return
+        random.seed(self.random_seed)
+        np.random.seed(self.random_seed)
     
     def _initialise_logger(self) -> None:
         self.log.handlers = []
@@ -47,7 +60,7 @@ class Simulation(ABC):
             app = App(simulation=self)
             sys.exit(app.exec_())
         else:
-            self.run_simulation_no_render(parallel)
+            self._run_simulation_no_render(parallel)
     
     def _run_simulation_no_render(self, parallel):
         self.initialise()
@@ -93,6 +106,7 @@ class Simulation(ABC):
         return self._complete
     
     def begin_simulation(self) -> None:
+        self.seed_random_generators()
         self.log_begin_simulation()
         time.sleep(0.2)
         
@@ -200,8 +214,10 @@ class Simulation(ABC):
         self.begin_assessment()
     
     def log_begin_simulation(self) -> None:
+        seed = "None" if self.random_seed is None else self.random_seed
         self.log.info(f"Simulation Started: {self.runs} runs, {self.generations} generations per run, "
-                      f"{self.assessments} assessments per generation, {self.timesteps} timesteps.")
+                      f"{self.assessments} assessments per generation, {self.timesteps} timesteps, "
+                      f"random seed {seed}.")
     
     def log_resume_simulation(self) -> None:
         pass

@@ -91,6 +91,7 @@ def collision_sensor(typing: type[WorldObject], threshold: float = 1.0) -> Senso
     s.scale_function = ScaleThreshold(1.0)
     return s
 
+# state sensor implementation, based on touchsensor functionality.
 def state_sensor(typing: type[WorldObject], threshold: float = 1.0) -> Sensor:
     s = StateSensor()
     s.match_function = MatchKind(typing)

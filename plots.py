@@ -23,74 +23,127 @@ PLOTS_DIR = Path("plots")
 SMOOTHING_WINDOW = 15
 FINAL_WINDOW = 50
 
+TEST_LABELS = {
+    "baseline": "Baseline",
+    "test_1": "Test 1: fear only",
+    "test_2": "Test 2: cluster only",
+    "test_3": "Test 3: wolf fear + protection",
+    "test_4": "Test 4: safety seeking",
+    "test_5": "Test 5: realistic trigger",
+}
 
-@dataclass(frozen=True)
-class ScenarioPlotConfig:
-    slug: str
-    label: str
-    color: str
+FITNESS_LABELS = {
+    "current": "Current",
+    "survival_bonus": "Survival bonus",
+    "strong_survival": "Strong survival",
+}
 
+TEST_COLORS = {
+    "baseline": "#4d4d4d",
+    "test_1": "#1f77b4",
+    "test_2": "#2ca02c",
+    "test_3": "#9467bd",
+    "test_4": "#ff7f0e",
+    "test_5": "#d62728",
+}
 
-SCENARIOS = [
-    ScenarioPlotConfig(
-        "baseline_no_cluster_no_fear",
-        "Baseline",
-        "#4d4d4d",
-    ),
-    ScenarioPlotConfig(
-        "test_1_no_cluster_fear_wolf_seen",
-        "Test 1: fear only",
-        "#1f77b4",
-    ),
-    ScenarioPlotConfig(
-        "test_2_cluster_no_fear",
-        "Test 2: cluster only",
-        "#2ca02c",
-    ),
-    ScenarioPlotConfig(
-        "test_3_cluster_fear_wolf_seen",
-        "Test 3: wolf fear + protection",
-        "#9467bd",
-    ),
-    ScenarioPlotConfig(
-        "test_4_cluster_fear_unsafe",
-        "Test 4: safety seeking",
-        "#ff7f0e",
-    ),
-    ScenarioPlotConfig(
-        "test_5_cluster_fear_wolf_and_unsafe",
-        "Test 5: realistic trigger",
-        "#d62728",
-    ),
+FITNESS_LINESTYLES = {
+    "current": "-",
+    "survival_bonus": "--",
+    "strong_survival": ":",
+}
+
+SUMMARY_METRICS = [
+    "avg_sheep_fitness",
+    "avg_wolf_fitness",
+    "survival_rate",
+    "grass_per_sheep",
+    "protected_time_fraction",
+    "protected_alive_fraction_end",
+    "mean_alive_cluster_size_end",
+    "largest_alive_cluster_size_end",
+    "wolf_kills",
+    "objective_survival_foraging_score",
+    "objective_cluster_survival_score",
 ]
 
 
-def load_results() -> dict[ScenarioPlotConfig, list[dict[str, float]]]:
-    loaded = {}
+@dataclass
+class ResultSeries:
+    path: Path
+    scenario: str
+    test: str
+    fitness: str
+    rows: list[dict[str, float | str]]
 
-    for scenario in SCENARIOS:
-        path = RESULTS_DIR / f"{scenario.slug}.csv"
-        if not path.exists():
-            continue
+    @property
+    def label(self) -> str:
+        test_label = TEST_LABELS.get(self.test, self.test)
+        fitness_label = FITNESS_LABELS.get(self.fitness, self.fitness)
+        return f"{test_label} / {fitness_label}"
 
-        with path.open(newline="") as f:
-            rows = []
-            for row in csv.DictReader(f):
-                rows.append(
-                    {
-                        "generation": int(row["generation"]) + 1,
-                        "avg_sheep_fitness": float(row["avg_sheep_fitness"]),
-                        "avg_wolf_fitness": float(row["avg_wolf_fitness"]),
-                    }
-                )
+    @property
+    def color(self) -> str:
+        return TEST_COLORS.get(self.test, "#333333")
 
-        if rows:
-            loaded[scenario] = rows
+    @property
+    def linestyle(self) -> str:
+        return FITNESS_LINESTYLES.get(self.fitness, "-")
 
-    if not loaded:
+
+def load_results() -> list[ResultSeries]:
+    paths = sorted(RESULTS_DIR.glob("*.csv"))
+    if not paths:
         raise FileNotFoundError(f"No herd result CSVs found in {RESULTS_DIR.resolve()}")
 
-    return loaded
+    parsed = []
+    for path in paths:
+        with path.open(newline="") as f:
+            reader = csv.DictReader(f)
+            rows = []
+            for row in reader:
+                converted = {}
+                for key, value in row.items():
+                    if key in {"scenario", "test", "fitness"}:
+                        converted[key] = value
+                    else:
+                        try:
+                            converted[key] = float(value)
+                        except ValueError:
+                            converted[key] = value
+                if "generation" in converted:
+                    converted["generation"] = int(converted["generation"]) + 1
+                rows.append(converted)
+
+        if not rows:
+            continue
+
+        first = rows[0]
+        scenario = str(first.get("scenario", path.stem))
+        test = str(first.get("test", infer_test_key(scenario)))
+        fitness = str(first.get("fitness", "current"))
+        parsed.append(ResultSeries(path, scenario, test, fitness, rows))
+
+    if any("__fit_" in series.path.stem for series in parsed):
+        parsed = [series for series in parsed if "__fit_" in series.path.stem]
+
+    if not parsed:
+        raise FileNotFoundError(f"No readable herd result CSVs found in {RESULTS_DIR.resolve()}")
+
+    return sorted(parsed, key=lambda s: (s.test, s.fitness))
+
+
+def infer_test_key(scenario: str) -> str:
+    if scenario.startswith("baseline"):
+        return "baseline"
+    for key in TEST_LABELS:
+        if scenario.startswith(key):
+            return key
+    return scenario
+
+
+def available_metric(series: ResultSeries, metric: str) -> bool:
+    return metric in series.rows[0]
 
 
 def moving_average(values: np.ndarray, window: int = SMOOTHING_WINDOW) -> np.ndarray:
@@ -104,9 +157,9 @@ def moving_average(values: np.ndarray, window: int = SMOOTHING_WINDOW) -> np.nda
     return smoothed
 
 
-def metric_arrays(rows: list[dict[str, float]], metric: str) -> tuple[np.ndarray, np.ndarray]:
-    x = np.array([row["generation"] for row in rows], dtype=float)
-    y = np.array([row[metric] for row in rows], dtype=float)
+def metric_arrays(series: ResultSeries, metric: str) -> tuple[np.ndarray, np.ndarray]:
+    x = np.array([row["generation"] for row in series.rows], dtype=float)
+    y = np.array([row[metric] for row in series.rows], dtype=float)
     return x, y
 
 
@@ -127,190 +180,168 @@ def save(fig, filename: str) -> None:
 
 
 def plot_metric_comparison(
-    data: dict[ScenarioPlotConfig, list[dict[str, float]]],
+    series_list: list[ResultSeries],
     metric: str,
     ylabel: str,
     title: str,
     filename: str,
 ) -> None:
-    fig, ax = plt.subplots(figsize=(12, 7))
+    available = [series for series in series_list if available_metric(series, metric)]
+    if not available:
+        return
 
-    for scenario, rows in data.items():
-        x, y = metric_arrays(rows, metric)
-        ax.plot(x, y, color=scenario.color, alpha=0.16, linewidth=0.8)
+    fig, ax = plt.subplots(figsize=(13, 8))
+
+    for series in available:
+        x, y = metric_arrays(series, metric)
+        ax.plot(x, y, color=series.color, alpha=0.10, linewidth=0.8)
         ax.plot(
             x,
             moving_average(y),
-            color=scenario.color,
-            linewidth=2.2,
-            label=scenario.label,
+            color=series.color,
+            linestyle=series.linestyle,
+            linewidth=2.1,
+            label=series.label,
         )
 
     style_axis(ax, title, ylabel)
-    ax.legend(frameon=False, fontsize=9)
+    ax.legend(frameon=False, fontsize=8, ncols=2)
     save(fig, filename)
 
 
-def plot_dual_axis_by_test(data: dict[ScenarioPlotConfig, list[dict[str, float]]]) -> None:
-    scenarios = list(data)
-    fig, axes = plt.subplots(len(scenarios), 1, figsize=(12, 3.2 * len(scenarios)), sharex=True)
+def plot_final_window_summary(series_list: list[ResultSeries], metric: str, ylabel: str, filename: str) -> None:
+    available = [series for series in series_list if available_metric(series, metric)]
+    if not available:
+        return
 
-    if len(scenarios) == 1:
-        axes = [axes]
+    labels = [series.label for series in available]
+    means = []
+    colors = []
+    hatches = []
 
-    for ax, scenario in zip(axes, scenarios):
-        rows = data[scenario]
-        x, sheep = metric_arrays(rows, "avg_sheep_fitness")
-        _, wolf = metric_arrays(rows, "avg_wolf_fitness")
-
-        sheep_line = ax.plot(
-            x,
-            moving_average(sheep),
-            color="#1f77b4",
-            linewidth=2.0,
-            label="Sheep fitness",
-        )
-        ax.set_ylabel("Sheep fitness")
-        ax.grid(True, alpha=0.25)
-        ax.spines["top"].set_visible(False)
-
-        ax2 = ax.twinx()
-        wolf_line = ax2.plot(
-            x,
-            moving_average(wolf),
-            color="#d62728",
-            linewidth=2.0,
-            label="Wolf fitness",
-        )
-        ax2.set_ylabel("Wolf fitness")
-        ax2.spines["top"].set_visible(False)
-
-        ax.set_title(scenario.label, fontsize=12, loc="left")
-        lines = sheep_line + wolf_line
-        labels = [line.get_label() for line in lines]
-        ax.legend(lines, labels, frameon=False, fontsize=9, loc="upper left")
-
-    axes[-1].set_xlabel("Generation")
-    fig.suptitle("Sheep and Wolf Fitness by Test", fontsize=15, y=1.0)
-    save(fig, "sheep_vs_wolf_by_test.png")
-
-
-def plot_final_window_summary(data: dict[ScenarioPlotConfig, list[dict[str, float]]]) -> None:
-    labels = [scenario.label for scenario in data]
-    sheep_means = []
-    wolf_means = []
-
-    for rows in data.values():
-        sheep = np.array([row["avg_sheep_fitness"] for row in rows], dtype=float)
-        wolf = np.array([row["avg_wolf_fitness"] for row in rows], dtype=float)
-        sheep_means.append(sheep[-FINAL_WINDOW:].mean())
-        wolf_means.append(wolf[-FINAL_WINDOW:].mean())
+    for series in available:
+        _, y = metric_arrays(series, metric)
+        means.append(y[-FINAL_WINDOW:].mean())
+        colors.append(series.color)
+        hatches.append({"current": "", "survival_bonus": "//", "strong_survival": ".."}.get(series.fitness, ""))
 
     x = np.arange(len(labels))
-    fig, (ax1, ax2) = plt.subplots(2, 1, figsize=(12, 8), sharex=True)
+    fig, ax = plt.subplots(figsize=(14, 7))
+    bars = ax.bar(x, means, color=colors)
+    for bar, hatch in zip(bars, hatches):
+        bar.set_hatch(hatch)
 
-    ax1.bar(x, sheep_means, color=[scenario.color for scenario in data])
-    style_axis(
-        ax1,
-        f"Mean Sheep Fitness Over Final {FINAL_WINDOW} Generations",
-        "Sheep fitness",
-    )
-
-    ax2.bar(x, wolf_means, color=[scenario.color for scenario in data])
-    style_axis(
-        ax2,
-        f"Mean Wolf Fitness Over Final {FINAL_WINDOW} Generations",
-        "Wolf fitness",
-    )
-    ax2.set_xticks(x)
-    ax2.set_xticklabels(labels, rotation=25, ha="right")
-
-    save(fig, "final_window_mean_fitness.png")
+    style_axis(ax, f"Final {FINAL_WINDOW}-Generation Mean: {ylabel}", ylabel)
+    ax.set_xticks(x)
+    ax.set_xticklabels(labels, rotation=35, ha="right")
+    save(fig, filename)
 
 
-def plot_sheep_wolf_ratio(data: dict[ScenarioPlotConfig, list[dict[str, float]]]) -> None:
-    fig, ax = plt.subplots(figsize=(12, 7))
-
-    for scenario, rows in data.items():
-        x, sheep = metric_arrays(rows, "avg_sheep_fitness")
-        _, wolf = metric_arrays(rows, "avg_wolf_fitness")
-        ratio = sheep / np.maximum(wolf, 1e-9)
-        ax.plot(
-            x,
-            moving_average(ratio),
-            color=scenario.color,
-            linewidth=2.0,
-            label=scenario.label,
-        )
-
-    style_axis(
-        ax,
-        "Sheep-to-Wolf Fitness Ratio",
-        "Sheep fitness / wolf fitness",
-    )
-    ax.axhline(1.0, color="#333333", linewidth=1.0, linestyle="--", alpha=0.6)
-    ax.legend(frameon=False, fontsize=9)
-    save(fig, "sheep_wolf_fitness_ratio.png")
-
-
-def write_summary_csv(data: dict[ScenarioPlotConfig, list[dict[str, float]]]) -> None:
+def write_summary_csv(series_list: list[ResultSeries]) -> None:
     PLOTS_DIR.mkdir(exist_ok=True)
     path = PLOTS_DIR / "summary_stats.csv"
+    metrics = [
+        metric
+        for metric in SUMMARY_METRICS
+        if any(available_metric(series, metric) for series in series_list)
+    ]
 
     with path.open("w", newline="") as f:
         writer = csv.writer(f)
-        writer.writerow(
-            [
-                "scenario",
-                "generations",
-                "final_sheep_fitness",
-                "final_wolf_fitness",
-                f"final_{FINAL_WINDOW}_mean_sheep_fitness",
-                f"final_{FINAL_WINDOW}_mean_wolf_fitness",
-                "best_sheep_fitness",
-                "best_wolf_fitness",
-            ]
-        )
+        header = ["scenario", "test", "fitness", "result_file", "generations"]
+        for metric in metrics:
+            header.extend([
+                f"final_{metric}",
+                f"final_{FINAL_WINDOW}_mean_{metric}",
+                f"best_{metric}",
+            ])
+        writer.writerow(header)
 
-        for scenario, rows in data.items():
-            sheep = np.array([row["avg_sheep_fitness"] for row in rows], dtype=float)
-            wolf = np.array([row["avg_wolf_fitness"] for row in rows], dtype=float)
-            writer.writerow(
-                [
-                    scenario.label,
-                    len(rows),
-                    sheep[-1],
-                    wolf[-1],
-                    sheep[-FINAL_WINDOW:].mean(),
-                    wolf[-FINAL_WINDOW:].mean(),
-                    sheep.max(),
-                    wolf.max(),
-                ]
-            )
+        for series in series_list:
+            row = [
+                series.scenario,
+                series.test,
+                series.fitness,
+                series.path.name,
+                len(series.rows),
+            ]
+            for metric in metrics:
+                if not available_metric(series, metric):
+                    row.extend(["", "", ""])
+                    continue
+
+                _, y = metric_arrays(series, metric)
+                row.extend([y[-1], y[-FINAL_WINDOW:].mean(), y.max()])
+            writer.writerow(row)
 
 
 def main() -> None:
-    data = load_results()
+    series_list = load_results()
 
     plot_metric_comparison(
-        data,
+        series_list,
         "avg_sheep_fitness",
         "Average sheep fitness",
-        "Sheep Fitness Across Herd Tests",
+        "Sheep Fitness Across Scenario/Fitness Tests",
         "sheep_fitness_comparison.png",
     )
     plot_metric_comparison(
-        data,
+        series_list,
         "avg_wolf_fitness",
         "Average wolf fitness",
-        "Wolf Fitness Across Herd Tests",
+        "Wolf Fitness Across Scenario/Fitness Tests",
         "wolf_fitness_comparison.png",
     )
-    plot_dual_axis_by_test(data)
-    plot_final_window_summary(data)
-    plot_sheep_wolf_ratio(data)
-    write_summary_csv(data)
+    plot_metric_comparison(
+        series_list,
+        "survival_rate",
+        "Survival rate",
+        "Objective Survival Rate Across Tests",
+        "survival_rate_comparison.png",
+    )
+    plot_metric_comparison(
+        series_list,
+        "protected_time_fraction",
+        "Protected time fraction",
+        "Objective Clustering Behaviour Across Tests",
+        "protected_time_fraction_comparison.png",
+    )
+    plot_metric_comparison(
+        series_list,
+        "grass_per_sheep",
+        "Grass eaten per sheep",
+        "Foraging Performance Across Tests",
+        "grass_per_sheep_comparison.png",
+    )
+    plot_metric_comparison(
+        series_list,
+        "objective_cluster_survival_score",
+        "Survival rate x protected time fraction",
+        "Composite Clustering-Survival Objective",
+        "objective_cluster_survival_score.png",
+    )
 
+    plot_final_window_summary(
+        series_list,
+        "survival_rate",
+        "Survival rate",
+        "final_window_survival_rate.png",
+    )
+    plot_final_window_summary(
+        series_list,
+        "protected_time_fraction",
+        "Protected time fraction",
+        "final_window_protected_time_fraction.png",
+    )
+    plot_final_window_summary(
+        series_list,
+        "objective_cluster_survival_score",
+        "Survival x protected time",
+        "final_window_cluster_survival_objective.png",
+    )
+    write_summary_csv(series_list)
+
+    print(f"Loaded {len(series_list)} result files")
     print(f"Wrote plots to {PLOTS_DIR.resolve()}")
 
 

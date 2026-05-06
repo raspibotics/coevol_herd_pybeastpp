@@ -1,5 +1,7 @@
 import numpy as np
 
+from dataclasses import dataclass
+
 from core.world.world_object import WorldObject
 from core.agent.ffn_agent import EvolvableFFNAgent
 from core.utils import ColourPalette, ColourType as CT
@@ -14,51 +16,112 @@ from core.evolve.base import Group
 
 import csv
 import os
+from concurrent.futures import ProcessPoolExecutor, as_completed
 
 IS_DEMO = True
 DEMO_NAME = "Herd"
 CLASS_NAME = "HerdSimulation"
 
-# baseline_no_cluster_no_fear
-# test_1_no_cluster_fear
-# test_2_cluster_no_fear
-# test_3_cluster_fear_unsafe
-# test_4_cluster_fear_wolf_and_safety
+@dataclass(frozen=True)
+class HerdTestScenario:
+    key: str
+    scenario_name: str
+    use_cluster_protection: bool
+    use_is_afraid_sensor: bool
+    fear_mode: str
+    purpose: str
 
-# SCENARIO_NAME = "baseline_no_cluster_no_fear"
-# USE_CLUSTER_PROTECTION = False
-# USE_IS_AFRAID_SENSOR = False
-# FEAR_MODE = "none"
 
-# Test 1
-# SCENARIO_NAME = "test_1_no_cluster_fear_wolf_seen"
-# USE_CLUSTER_PROTECTION = False
-# USE_IS_AFRAID_SENSOR = True
-# FEAR_MODE = "wolf_seen"
+HERD_TEST_SCENARIOS = {
+    "baseline": HerdTestScenario(
+        key="baseline",
+        scenario_name="baseline_no_cluster_no_fear",
+        use_cluster_protection=False,
+        use_is_afraid_sensor=False,
+        fear_mode="none",
+        purpose="Pure foraging + wolf hunting baseline",
+    ),
+    "test_1": HerdTestScenario(
+        key="test_1",
+        scenario_name="test_1_no_cluster_fear_wolf_seen",
+        use_cluster_protection=False,
+        use_is_afraid_sensor=True,
+        fear_mode="wolf_seen",
+        purpose="Tests whether fear alone improves survival",
+    ),
+    "test_2": HerdTestScenario(
+        key="test_2",
+        scenario_name="test_2_cluster_no_fear",
+        use_cluster_protection=True,
+        use_is_afraid_sensor=False,
+        fear_mode="none",
+        purpose="Tests whether cluster immunity alone creates survival advantage",
+    ),
+    "test_3": HerdTestScenario(
+        key="test_3",
+        scenario_name="test_3_cluster_fear_wolf_seen",
+        use_cluster_protection=True,
+        use_is_afraid_sensor=True,
+        fear_mode="wolf_seen",
+        purpose="Tests if fear of wolves and herd protection implies safety in numbers",
+    ),
+    "test_4": HerdTestScenario(
+        key="test_4",
+        scenario_name="test_4_cluster_fear_unsafe",
+        use_cluster_protection=True,
+        use_is_afraid_sensor=True,
+        fear_mode="unsafe",
+        purpose="Tests whether sheep cluster due to safety-seeking",
+    ),
+    "test_5": HerdTestScenario(
+        key="test_5",
+        scenario_name="test_5_cluster_fear_wolf_and_unsafe",
+        use_cluster_protection=True,
+        use_is_afraid_sensor=True,
+        fear_mode="wolf_and_unsafe",
+        purpose="Most biologically realistic condition",
+    ),
+}
 
-# Test 2
-# SCENARIO_NAME = "test_2_cluster_no_fear"
-# USE_CLUSTER_PROTECTION = True
-# USE_IS_AFRAID_SENSOR = False
-# FEAR_MODE = "none"
+DEFAULT_HERD_TEST = "test_5"
+DEFAULT_SCENARIO = HERD_TEST_SCENARIOS[DEFAULT_HERD_TEST]
+HERD_EXPERIMENT_TESTS = ["test_1", "test_2", "test_3", "test_4", "test_5"]
 
-# Test 3
-# SCENARIO_NAME = "test_3_cluster_fear_wolf_seen"
-# USE_CLUSTER_PROTECTION = True
-# USE_IS_AFRAID_SENSOR = True
-# FEAR_MODE = "wolf_seen"
+SELECTED_HERD_TESTS = [
+    "baseline",  # no cluster protection, no is_afraid sensor, no fear trigger
+    "test_1",    # no cluster protection, is_afraid sensor, wolf seen -> afraid
+    "test_2",    # cluster protection, no is_afraid sensor, no fear trigger
+    "test_3",    # cluster protection, is_afraid sensor, wolf seen -> afraid
+    "test_4",    # cluster protection, is_afraid sensor, not protected -> afraid
+    "test_5",    # cluster protection, is_afraid sensor, wolf seen and not protected -> afraid
+]
 
-# Test 4
-# SCENARIO_NAME = "test_4_cluster_fear_unsafe"
-# USE_CLUSTER_PROTECTION = True
-# USE_IS_AFRAID_SENSOR = True
-# FEAR_MODE = "unsafe"
+SCENARIO_NAME = DEFAULT_SCENARIO.scenario_name
+USE_CLUSTER_PROTECTION = DEFAULT_SCENARIO.use_cluster_protection
+USE_IS_AFRAID_SENSOR = DEFAULT_SCENARIO.use_is_afraid_sensor
+FEAR_MODE = DEFAULT_SCENARIO.fear_mode
 
-# Test 5
-SCENARIO_NAME = "test_5_cluster_fear_wolf_and_unsafe"
-USE_CLUSTER_PROTECTION = True
-USE_IS_AFRAID_SENSOR = True
-FEAR_MODE = "wolf_and_unsafe"
+
+def set_herd_test_scenario(scenario: HerdTestScenario | str) -> HerdTestScenario:
+    if isinstance(scenario, str):
+        try:
+            scenario = HERD_TEST_SCENARIOS[scenario]
+        except KeyError as exc:
+            known_tests = ", ".join(HERD_TEST_SCENARIOS)
+            raise ValueError(f"Unknown herd test '{scenario}'. Choose from: {known_tests}") from exc
+
+    global SCENARIO_NAME, USE_CLUSTER_PROTECTION, USE_IS_AFRAID_SENSOR, FEAR_MODE
+    SCENARIO_NAME = scenario.scenario_name
+    USE_CLUSTER_PROTECTION = scenario.use_cluster_protection
+    USE_IS_AFRAID_SENSOR = scenario.use_is_afraid_sensor
+    FEAR_MODE = scenario.fear_mode
+
+    return scenario
+
+
+def herd_test_keys(selected_tests: list[HerdTestScenario | str] | None) -> list[str]:
+    tests = SELECTED_HERD_TESTS if selected_tests is None else selected_tests
+    return [set_herd_test_scenario(test).key for test in tests]
 
 class Grass(WorldObject):
     def __init__(self):
@@ -107,7 +170,8 @@ class Sheep(EvolvableFFNAgent, Evolver):
         self.add_sensor("left_wolf", proximity_sensor(Wolf, (0.805*np.pi), vision_range, (0.2916*np.pi), True))
         self.add_sensor("right_wolf", proximity_sensor(Wolf, (0.805*np.pi), vision_range, -(0.2916*np.pi), True))
         # custom built state sensor
-        self.add_sensor("is_afraid", state_sensor(Sheep))
+        if USE_IS_AFRAID_SENSOR:
+            self.add_sensor("is_afraid", state_sensor(Sheep))
 
         self.add_brain(10)
 
@@ -269,8 +333,12 @@ class Wolf(EvolvableFFNAgent, Evolver):
         
 
 class HerdSimulation(Simulation):
-    def __init__(self):
-        super().__init__("Herd")
+    def __init__(self, scenario: HerdTestScenario | str = DEFAULT_HERD_TEST):
+        self.scenario = set_herd_test_scenario(scenario)
+        self.scenario_name = self.scenario.scenario_name
+        self.display_name = f"Herd - {self.scenario.key.replace('_', ' ').title()}"
+
+        super().__init__(self.display_name)
         
         self.generations = 100
         self.assessments = 1
@@ -287,7 +355,7 @@ class HerdSimulation(Simulation):
         self.results_dir = "results"
         os.makedirs(self.results_dir, exist_ok=True)
 
-        self.csv_path = os.path.join(self.results_dir, f"{SCENARIO_NAME}.csv")
+        self.csv_path = os.path.join(self.results_dir, f"{self.scenario_name}.csv")
 
         with open(self.csv_path, "w", newline="") as f:
             writer = csv.writer(f)
@@ -298,6 +366,12 @@ class HerdSimulation(Simulation):
                 "avg_wolf_fitness"
             ])
         
+    def log_begin_assessment(self):
+        self.log.info(
+            f"Scenario: {self.scenario_name} | "
+            f"Generation: {self._generation + 1}/{self.generations} | "
+            f"Assessment: {self._assessment + 1}/{self.assessments}"
+        )
 
     def log_end_generation(self):
         sheep_averages = self.contents["sheep"].average_member_fitness()
@@ -309,8 +383,8 @@ class HerdSimulation(Simulation):
         self.log.info(f"Average wolf Fitness: {wolf_average:.3f} Count: {self._generation}")
 
         self.log.info(
-            f"Scenario: {SCENARIO_NAME} | "
-            f"Generation: {self._generation} | "
+            f"Scenario: {self.scenario_name} | "
+            f"Generation: {self._generation + 1}/{self.generations} | "
             f"Average sheep fitness: {sheep_average:.3f} | "
             f"Average wolf fitness: {wolf_average:.3f}"
         )
@@ -319,7 +393,128 @@ class HerdSimulation(Simulation):
             writer = csv.writer(f)
             writer.writerow([
                 self._generation,
-                SCENARIO_NAME,
+                self.scenario_name,
                 sheep_average,
                 wolf_average
             ])
+
+
+def herd_test_demo_name(scenario: HerdTestScenario) -> str:
+    return f"Herd - {scenario.key.replace('_', ' ').title()}"
+
+
+def make_herd_simulation_class(scenario_key: str):
+    scenario = HERD_TEST_SCENARIOS[scenario_key]
+
+    class ConfiguredHerdSimulation(HerdSimulation):
+        def __init__(self):
+            super().__init__(scenario)
+
+    ConfiguredHerdSimulation.__name__ = f"{scenario.key}_HerdSimulation"
+    return ConfiguredHerdSimulation
+
+
+DEMO_CLASSES = [
+    (herd_test_demo_name(HERD_TEST_SCENARIOS[test]), make_herd_simulation_class(test))
+    for test in SELECTED_HERD_TESTS
+]
+
+
+def _run_herd_test_no_render(
+    test: str,
+    runs: int | None,
+    generations: int | None,
+    assessments: int | None,
+    timesteps: int | None,
+) -> str:
+    sim = HerdSimulation(test)
+    scenario = sim.scenario
+
+    if runs is not None:
+        sim.runs = runs
+    if generations is not None:
+        sim.generations = generations
+    if assessments is not None:
+        sim.assessments = assessments
+    if timesteps is not None:
+        sim.timesteps = timesteps
+
+    sim.log.info(f"Running herd test: {scenario.key} ({scenario.scenario_name})")
+    sim.log.info(f"Purpose: {scenario.purpose}")
+    sim.run_simulation(render=False, parallel=False)
+    return scenario.scenario_name
+
+
+def run_herd_tests_parallel(
+    selected_tests: list[HerdTestScenario | str] | None = None,
+    *,
+    max_workers: int | None = None,
+    runs: int | None = None,
+    generations: int | None = None,
+    assessments: int | None = None,
+    timesteps: int | None = None,
+) -> None:
+    tests_to_run = herd_test_keys(selected_tests)
+
+    with ProcessPoolExecutor(max_workers=max_workers) as executor:
+        futures = {
+            executor.submit(
+                _run_herd_test_no_render,
+                test,
+                runs,
+                generations,
+                assessments,
+                timesteps,
+            ): test
+            for test in tests_to_run
+        }
+
+        for future in as_completed(futures):
+            test = futures[future]
+            scenario_name = future.result()
+            print(f"Finished herd test: {test} ({scenario_name})")
+
+
+def run_herd_tests(
+    selected_tests: list[HerdTestScenario | str] | None = None,
+    *,
+    render: bool = False,
+    parallel: bool = False,
+    max_workers: int | None = None,
+    runs: int | None = None,
+    generations: int | None = None,
+    assessments: int | None = None,
+    timesteps: int | None = None,
+) -> None:
+    tests_to_run = herd_test_keys(selected_tests)
+
+    if render and len(tests_to_run) > 1:
+        raise ValueError("Render mode can only run one herd test at a time.")
+
+    if parallel and not render and len(tests_to_run) > 1:
+        run_herd_tests_parallel(
+            tests_to_run,
+            max_workers=max_workers,
+            runs=runs,
+            generations=generations,
+            assessments=assessments,
+            timesteps=timesteps,
+        )
+        return
+
+    for test in tests_to_run:
+        sim = HerdSimulation(test)
+        scenario = sim.scenario
+
+        if runs is not None:
+            sim.runs = runs
+        if generations is not None:
+            sim.generations = generations
+        if assessments is not None:
+            sim.assessments = assessments
+        if timesteps is not None:
+            sim.timesteps = timesteps
+
+        sim.log.info(f"Running herd test: {scenario.key} ({scenario.scenario_name})")
+        sim.log.info(f"Purpose: {scenario.purpose}")
+        sim.run_simulation(render=render, parallel=parallel)

@@ -59,6 +59,13 @@ class Frame(QMainWindow):
 
             if hasattr(module, "IS_DEMO") and module.IS_DEMO:
                 sys.modules[demo.stem] = module
+                demo_classes = getattr(module, "DEMO_CLASSES", None)
+                if demo_classes is not None:
+                    for name, sim_class in demo_classes:
+                        self.simulation_names.append(name)
+                        self.simulation_class.append(sim_class)
+                    continue
+
                 name = getattr(module, "DEMO_NAME") # Demo Title
                 class_name = getattr(module, "CLASS_NAME") # Name of Simulation Class
                 sim_class = getattr(module, class_name)
@@ -174,6 +181,7 @@ PyBEAST++ created by James Borgars from PyBEAST"""
         if not self.current_simulation.loaded:
             self.current_simulation.initialise()
         self.create_world_canvas(self.current_simulation.world)
+        self.status_bar.showMessage(self.simulation_status_text())
 
         self.pause_event = threading.Event()
         self.render_simulation = threading.Event()
@@ -195,6 +203,22 @@ PyBEAST++ created by James Borgars from PyBEAST"""
         """Slot to update canvas from the main thread"""
         if self.world_canvas is not None:
             self.world_canvas.display()
+        self.status_bar.showMessage(self.simulation_status_text())
+
+    def simulation_status_text(self) -> str:
+        if self.current_simulation is None:
+            return "Ready"
+
+        sim = self.current_simulation
+        name = getattr(sim, "display_name", sim.__class__.__name__)
+        generation = min(sim._generation + 1, sim.generations)
+        timestep = min(sim._timestep, sim.timesteps)
+
+        return (
+            f"{name} | "
+            f"Generation {generation}/{sim.generations} | "
+            f"Timestep {timestep}/{sim.timesteps}"
+        )
 
     def create_world_canvas(self, world: World):
         self.world_canvas = Canvas(self, self.size(), world)
@@ -208,6 +232,7 @@ PyBEAST++ created by James Borgars from PyBEAST"""
             self.world_canvas = None
         self.current_simulation = None
         self.current_thread = None
+        self.status_bar.showMessage("Ready")
 
     def run_simulation(
         self,

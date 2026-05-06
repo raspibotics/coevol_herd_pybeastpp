@@ -1,7 +1,11 @@
-from demos.evo_mouse import EvoMouseSimulation
+from demos.herd_dynamics import HERD_EXPERIMENT_CASES, run_herd_tests
 
-sim = EvoMouseSimulation()
-sim.runs = 8  # Multiple independent runs
-
-# Run in parallel - that's it!
-sim.run_simulation(render=False, parallel=True)
+if __name__ == "__main__":
+    run_herd_tests(
+        HERD_EXPERIMENT_CASES,
+        render=False,
+        parallel=True,
+        max_workers=15,
+        generations=300,
+        random_seed=12345,
+    )

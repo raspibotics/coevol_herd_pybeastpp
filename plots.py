@@ -275,6 +275,146 @@ def write_summary_csv(series_list: list[ResultSeries]) -> None:
             writer.writerow(row)
 
 
+def final_window_mean(series: ResultSeries, metric: str) -> float:
+    _, y = metric_arrays(series, metric)
+    return float(y[-FINAL_WINDOW:].mean())
+
+
+def final_window_mean_when_alive(series: ResultSeries, metric: str) -> float:
+    final_rows = series.rows[-FINAL_WINDOW:]
+    values = [
+        float(row[metric])
+        for row in final_rows
+        if float(row.get("sheep_alive", 0.0)) > 0.0
+    ]
+    if not values:
+        return 0.0
+    return float(np.array(values, dtype=float).mean())
+
+
+def report_table_rows(series_list: list[ResultSeries]) -> list[dict[str, str | float]]:
+    available = [
+        series
+        for series in series_list
+        if all(
+            available_metric(series, metric)
+            for metric in [
+                "survival_rate",
+                "protected_time_fraction",
+                "mean_alive_cluster_size_end",
+                "grass_per_sheep",
+                "wolf_kills",
+                "objective_cluster_survival_score",
+            ]
+        )
+    ]
+
+    ranked = sorted(
+        available,
+        key=lambda series: final_window_mean(series, "objective_cluster_survival_score"),
+        reverse=True,
+    )
+
+    rows = []
+    for rank, series in enumerate(ranked, start=1):
+        rows.append(
+            {
+                "rank": rank,
+                "test": TEST_LABELS.get(series.test, series.test),
+                "fitness": FITNESS_LABELS.get(series.fitness, series.fitness),
+                "survival_pct": final_window_mean(series, "survival_rate") * 100.0,
+                "protected_time_pct": final_window_mean(series, "protected_time_fraction") * 100.0,
+                "mean_end_cluster_size_when_alive": final_window_mean_when_alive(
+                    series,
+                    "mean_alive_cluster_size_end",
+                ),
+                "grass_per_sheep": final_window_mean(series, "grass_per_sheep"),
+                "wolf_kills": final_window_mean(series, "wolf_kills"),
+                "cluster_survival_score": final_window_mean(series, "objective_cluster_survival_score"),
+            }
+        )
+    return rows
+
+
+def write_report_table(series_list: list[ResultSeries]) -> None:
+    PLOTS_DIR.mkdir(exist_ok=True)
+    rows = report_table_rows(series_list)
+
+    csv_path = PLOTS_DIR / "report_table.csv"
+    with csv_path.open("w", newline="") as f:
+        writer = csv.writer(f)
+        writer.writerow(
+            [
+                "rank",
+                "test",
+                "fitness",
+                "survival_percent",
+                "protected_time_percent",
+                "mean_end_cluster_size_when_alive",
+                "grass_per_sheep",
+                "wolf_kills",
+                "cluster_survival_score",
+            ]
+        )
+        for row in rows:
+            writer.writerow(
+                [
+                    row["rank"],
+                    row["test"],
+                    row["fitness"],
+                    f"{row['survival_pct']:.1f}",
+                    f"{row['protected_time_pct']:.1f}",
+                    f"{row['mean_end_cluster_size_when_alive']:.2f}",
+                    f"{row['grass_per_sheep']:.2f}",
+                    f"{row['wolf_kills']:.2f}",
+                    f"{row['cluster_survival_score']:.3f}",
+                ]
+            )
+
+    markdown_path = PLOTS_DIR / "report_table.md"
+    with markdown_path.open("w", newline="") as f:
+        f.write("# Herd Experiment Report Table\n\n")
+        f.write(
+            f"Values are means over the final {FINAL_WINDOW} generations. "
+            "Rows are ranked by the cluster-survival score, defined as "
+            "survival rate x protected time fraction. Mean end cluster size "
+            "is averaged only across generations where at least one sheep survived.\n\n"
+        )
+        f.write(
+            "| Rank | Test condition | Fitness treatment | Survival (%) | "
+            "Protected time (%) | Mean end cluster size when alive | Grass/sheep | "
+            "Wolf kills | Cluster-survival score |\n"
+        )
+        f.write("|---:|---|---|---:|---:|---:|---:|---:|---:|\n")
+        for row in rows:
+            f.write(
+                f"| {row['rank']} | {row['test']} | {row['fitness']} | "
+                f"{row['survival_pct']:.1f} | {row['protected_time_pct']:.1f} | "
+                f"{row['mean_end_cluster_size_when_alive']:.2f} | {row['grass_per_sheep']:.2f} | "
+                f"{row['wolf_kills']:.2f} | {row['cluster_survival_score']:.3f} |\n"
+            )
+
+    latex_path = PLOTS_DIR / "report_table.tex"
+    with latex_path.open("w", newline="") as f:
+        f.write("\\begin{table}[ht]\n")
+        f.write("\\centering\n")
+        f.write("\\caption{Final 50-generation herd experiment performance summary. Rows are ranked by survival rate multiplied by protected time fraction. Mean end cluster size is averaged only over generations with at least one surviving sheep.}\n")
+        f.write("\\begin{tabular}{rllrrrrrr}\n")
+        f.write("\\hline\n")
+        f.write("Rank & Test & Fitness & Survival (\\%) & Protected (\\%) & Cluster size when alive & Grass/sheep & Wolf kills & Score \\\\\n")
+        f.write("\\hline\n")
+        for row in rows:
+            f.write(
+                f"{row['rank']} & {row['test']} & {row['fitness']} & "
+                f"{row['survival_pct']:.1f} & {row['protected_time_pct']:.1f} & "
+                f"{row['mean_end_cluster_size_when_alive']:.2f} & {row['grass_per_sheep']:.2f} & "
+                f"{row['wolf_kills']:.2f} & {row['cluster_survival_score']:.3f} \\\\\n"
+            )
+        f.write("\\hline\n")
+        f.write("\\end{tabular}\n")
+        f.write("\\end{table}\n")
+
+
 def main() -> None:
     series_list = load_results()
 
@@ -340,6 +480,7 @@ def main() -> None:
         "final_window_cluster_survival_objective.png",
     )
     write_summary_csv(series_list)
+    write_report_table(series_list)
 
     print(f"Loaded {len(series_list)} result files")
     print(f"Wrote plots to {PLOTS_DIR.resolve()}")
